@@ -48,22 +48,32 @@ LUMEN_PORT = int(os.environ.get("PORT", "8000"))
 INTERNAL_SERVICE_TOKEN = os.environ.get("INTERNAL_SERVICE_TOKEN", "").strip()
 
 # Super-admin credential for the core-fx login page.
+# Must be set via environment variables CORE_FX_ADMIN_USERNAME and CORE_FX_ADMIN_PASSWORD.
+# No fallback to Lumen admin password - credentials must be explicitly configured.
 SUPER_ADMIN_COOKIE = "core_fx_session"
 SESSION_TTL = 60 * 60 * 24 * 365
+SUPER_ADMIN_USERNAME: str | None = None
 SUPER_ADMIN_PASSWORD_HASH: str | None = None
 
 
 def _init_super_admin() -> None:
-    global SUPER_ADMIN_PASSWORD_HASH
-    pw = os.environ.get("SUPER_ADMIN_PASSWORD", "").strip()
-    if pw:
-        SUPER_ADMIN_PASSWORD_HASH = hashlib.sha256(f"{pw}{os.environ.get('SECRET_KEY', 'core-fx')}".encode()).hexdigest()
-    else:
-        # Fall back to the Lumen admin password hash so existing deployments keep
-        # working without a separate super-admin credential.
-        lumen_pw = os.environ.get("ADMIN_PASSWORD", "123456")
-        lumen_secret = os.environ.get("SECRET_KEY", "")
-        SUPER_ADMIN_PASSWORD_HASH = hashlib.sha256(f"{lumen_pw}{lumen_secret}".encode()).hexdigest()
+    global SUPER_ADMIN_USERNAME, SUPER_ADMIN_PASSWORD_HASH
+    username = os.environ.get("CORE_FX_ADMIN_USERNAME", "").strip()
+    password = os.environ.get("CORE_FX_ADMIN_PASSWORD", "").strip()
+    if not username or not password:
+        # Fail fast with clear error - credentials must be explicitly configured
+        raise RuntimeError(
+            "core-fx super-admin credentials not configured. "
+            "Set CORE_FX_ADMIN_USERNAME and CORE_FX_ADMIN_PASSWORD environment variables."
+        )
+    SUPER_ADMIN_USERNAME = username
+    # Use PBKDF2 with SHA-256 for password hashing (more secure than plain SHA-256)
+    SUPER_ADMIN_PASSWORD_HASH = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        os.environ.get('SECRET_KEY', 'core-fx').encode('utf-8'),
+        100000  # 100k iterations
+    ).hex()
 
 
 _init_super_admin()
@@ -188,9 +198,24 @@ async def api_login(request: Request) -> Response:
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="invalid body")
-    pw = str(body.get("password", "")).strip()
-    if _hash_password(pw) != SUPER_ADMIN_PASSWORD_HASH:
-        raise HTTPException(status_code=401, detail="super-admin password is incorrect")
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", "")).strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="username and password are required")
+    # Verify both username and password
+    expected_hash = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        os.environ.get('SECRET_KEY', 'core-fx').encode('utf-8'),
+        100000
+    ).hex()
+    if username != SUPER_ADMIN_USERNAME or SUPER_ADMIN_PASSWORD_HASH != hashlib.pbkdf2_hmac(
+        'sha256',
+        body.get("password", "").strip().encode('utf-8'),
+        os.environ.get('SECRET_KEY', 'core-fx').encode('utf-8'),
+        100000
+    ).hex():
+        raise HTTPException(status_code=401, detail="invalid username or password")
     token = await create_session()
     resp = JSONResponse({"ok": True})
     resp.set_cookie(
@@ -340,9 +365,16 @@ input:focus+.ic{color:#189BAD}
   <div class="err" id="err"><i class="ti ti-alert-circle"></i><span id="err-text"></span></div>
   <form id="form">
     <div class="field">
-      <label>Super-admin password</label>
+      <label>Username</label>
       <div class="inp-wrap">
-        <input type="password" id="pw" placeholder="Enter your password" autofocus required>
+        <input type="text" id="username" placeholder="Enter your username" autofocus required>
+        <i class="ti ti-user ic"></i>
+      </div>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <div class="inp-wrap">
+        <input type="password" id="pw" placeholder="Enter your password" required>
         <i class="ti ti-lock ic"></i>
       </div>
     </div>
@@ -357,12 +389,12 @@ document.getElementById('form').addEventListener('submit',async e=>{
   err.classList.remove('show');btn.disabled=true;
   btn.innerHTML='<span class="aspin"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span> Signing in...';
   try{
-    const r=await fetch('/api/core-fx/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})});
+    const r=await fetch('/api/core-fx/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('username').value,password:document.getElementById('pw').value})});
     if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||'Error');}
     location.href='/';
   }catch(e){
     et.textContent=e.message;err.classList.add('show');
-    btn.disabled=false;btn.innerHTML='<i class="ti ti-login-2"></i><span>Sign in</span>';
+    btn.disabled=false;btn.innerHTML='<i class="ti ti-login-2"></i> Sign in';
   }
 });
 </script>
@@ -451,7 +483,8 @@ input:focus,select:focus{border-color:var(--accent);background:color-mix(in srgb
 <div class="sec-head"><div class="sec-title"><i class="ti ti-lock"></i> Super-admin authentication</div></div>
 <div class="sec-body" style="text-align:center">
 <div class="msg msg-err" id="auth-err"><i class="ti ti-alert-circle"></i><span id="auth-err-text"></span></div>
-<div class="field"><label>Super-admin password</label><input type="password" id="pw" placeholder="Enter super-admin password"></div>
+<div class="field"><label>Username</label><input type="text" id="username" placeholder="Enter your username"></div>
+<div class="field"><label>Password</label><input type="password" id="pw" placeholder="Enter your password"></div>
 <button class="btn btn-primary" style="width:100%" onclick="doLogin()"><i class="ti ti-login-2"></i><span>Unlock core management</span></button>
 <div class="small" style="margin-top:12px">Separate from the Lumen admin password. Controls Mozilla account credentials.</div>
 </div>
@@ -561,11 +594,12 @@ async function checkAuth(){
 }
 
 async function doLogin(){
+  const username=document.getElementById('username').value;
   const pw=document.getElementById('pw').value;
   const err=document.getElementById('auth-err');err.style.display='none';
   try{
-    const r=await api('/api/core-fx/login',{method:'POST',body:JSON.stringify({password:pw})});
-    if(!r.ok){const d=await r.json().catch(()=>({}));document.getElementById('auth-err-text').textContent=d.detail||'Login failed';err.style.display='flex';return}
+    const r=await api('/api/core-fx/login',{method:'POST',body:JSON.stringify({username,password:pw})});
+    if(!r.ok){document.getElementById('auth-err-text').textContent=d.detail||'Login failed';err.style.display='flex';return}
     location.reload();
   }catch(e){
     document.getElementById('auth-err-text').textContent='Could not reach login service.';

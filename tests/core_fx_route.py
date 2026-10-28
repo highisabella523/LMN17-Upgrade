@@ -13,6 +13,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="lumen-corefx-")
+os.environ["CORE_FX_ADMIN_USERNAME"] = "admin"
+os.environ["CORE_FX_ADMIN_PASSWORD"] = "super-pass"
+os.environ["SECRET_KEY"] = "test-secret"
+os.environ["INTERNAL_SERVICE_TOKEN"] = "test-internal-token"
 
 import types
 class App:
